@@ -46,7 +46,9 @@ class SuperResolutionNet(nn.Module):
 
 # Create the super-resolution model by using the above model definition.
 torch_model = SuperResolutionNet(upscale_factor=3)
-#%% # Load pretrained model weights
+#%% Ordinarily, you would now train this model;
+#%% Here, Load pretrained model weights
+
 model_url = 'https://s3.amazonaws.com/pytorch/test_data/export/superres_epoch100-44c6958e.pth'
 batch_size = 1  # just a random number
 
@@ -57,11 +59,40 @@ if torch.cuda.is_available():
 torch_model.load_state_dict(model_zoo.load_url(model_url, map_location=map_location))
 # set the model to inference mode
 torch_model.eval()
+'''
+It is important to call torch_model.eval() or torch_model.train(False) before exporting the model, 
+to turn the model to inference mode. 
+This is required since operators like dropout or batchnorm 
+behave differently in inference and training mode.
+'''
 #%%
-# Input to the model
-x = torch.randn(batch_size, 1, 224, 224, requires_grad=True)
-torch_out = torch_model(x)
 
+'''
+The ONNX exporter can be both trace-based and script-based exporter.
+
+Trace-based means that it operates by executing your model once, 
+and exporting the operators which were actually run during this run. 
+This means that if your model is dynamic, e.g., changes behavior depending on input data,
+the export won’t be accurate.examining the model trace and making sure the traced operators look reasonable. 
+If your model contains control flows like for loops and if conditions, 
+trace-based exporter will unroll the loops and if conditions, 
+exporting a static graph that is exactly the same as this run.
+ 
+If you want to export your model with dynamic control flows, you will need to use the script-based exporter.
+
+Script-based means that the model you are trying to export is a ScriptModule. ScriptModule is the core data structure in TorchScript
+https://pytorch.org/docs/master/onnx.html
+'''
+
+x = torch.randn(batch_size, 1, 224, 224, requires_grad=True)       # Input to the model (dummy tensor)
+torch_out = torch_model(x)   #output after of the model, to verify that the model we exported computes the same values when run in ONNX Runtime.
+
+
+'''
+In this example we export the model with an input of batch_size 1, 
+but then specify the first dimension as dynamic in the dynamic_axes parameter in torch.onnx.export(). 
+The exported model will thus accept inputs of size [batch_size, 1, 224, 224] where batch_size can be variable.
+'''
 # Export the model
 torch.onnx.export(torch_model,               # model being run
                   x,                         # model input (or a tuple for multiple inputs)
@@ -74,6 +105,8 @@ torch.onnx.export(torch_model,               # model being run
                   dynamic_axes={'input' : {0 : 'batch_size'},    # variable lenght axes
                                 'output' : {0 : 'batch_size'}})
 #%% check the ONNX model with ONNX’s API
+
+
 import onnx
 
 onnx_model = onnx.load("super_resolution.onnx")  #load the saved model and will output a onnx
@@ -82,7 +115,8 @@ onnx.checker.check_model(onnx_model) #verify the model’s structure and confirm
 #%% compute the output using ONNX Runtime’s Python APIs
 import onnxruntime
 
-ort_session = onnxruntime.InferenceSession("super_resolution.onnx")
+ort_session = onnxruntime.InferenceSession("super_resolution.onnx")  # create an inference session for the model
+                                                                     # with the chosen configuration parameters (here default config)
 
 def to_numpy(tensor):
     return tensor.detach().cpu().numpy() if tensor.requires_grad else tensor.cpu().numpy()
@@ -92,11 +126,13 @@ ort_inputs = {ort_session.get_inputs()[0].name: to_numpy(x)}
 ort_outs = ort_session.run(None, ort_inputs)
 
 # compare ONNX Runtime and PyTorch results
-np.testing.assert_allclose(to_numpy(torch_out), ort_outs[0], rtol=1e-03, atol=1e-05)
-
+np.testing.assert_allclose(to_numpy(torch_out), ort_outs[0], rtol=1e-03, atol=1e-05)  # Raises an AssertionError if two objects are not equal up to desired tolerance.
+                                                                                      # match numerically with the given precision (here: rtol=1e-03 and atol=1e-05)
 print("Exported model has been tested with ONNXRuntime, and the result looks good!")
 #%%
 #%%Running the model on an image using ONNX Runtime
+
+
 from PIL import Image
 import torchvision.transforms as transforms
 
@@ -106,12 +142,15 @@ resize = transforms.Resize([224, 224])
 img = resize(img)
 
 img_ycbcr = img.convert('YCbCr')
-img_y, img_cb, img_cr = img_ycbcr.split()
+img_y, img_cb, img_cr = img_ycbcr.split()  #greyscale image (Y), and the blue-difference (Cb) and red-difference (Cr)
 
 to_tensor = transforms.ToTensor()
-img_y = to_tensor(img_y)
-img_y.unsqueeze_(0)
-#%% take the tensor representing the greyscale resized cat image and run the super-resolution model in ONNX Runtime as explained previously.
+img_y = to_tensor(img_y)  # convert it to a tensor which will be the input of our model.
+img_y.unsqueeze_(0)  # tensor
+#%% take the tensor representing the greyscale resized cat image
+# and run the super-resolution model in ONNX Runtime as explained previously.
+
+
 ort_inputs = {ort_session.get_inputs()[0].name: to_numpy(img_y)}
 ort_outs = ort_session.run(None, ort_inputs)
 img_out_y = ort_outs[0]
