@@ -16,8 +16,10 @@ an input, and outputs the upscaled Y component in super resolution.
 """
 import torch.nn as nn
 import torch.nn.init as init
+import torch.nn.functional as F
 
 
+#%%
 class SuperResolutionNet(nn.Module):
     def __init__(self, upscale_factor, inplace=False):
         super(SuperResolutionNet, self).__init__()
@@ -167,3 +169,27 @@ final_img = Image.merge(
 
 # Save the image, we will compare this with the output image from mobile device
 final_img.save(r"C:\Users\zhanq\OneDrive - Washington University in St. Louis\cat_superres_with_ort.jpg")
+#%%
+
+import torch.onnx
+import torchvision
+
+# Standard ImageNet input - 3 channels, 224x224,
+# values don't matter as we care about network structure.
+# But they can also be real inputs.
+dummy_input = torch.randn(1, 3, 224, 224)
+# Obtain your model, it can be also constructed in your script explicitly
+model = torchvision.models.alexnet(pretrained=True)
+# Invoke export
+torch.onnx.export(model, dummy_input, "alexnet.onnx")
+#%%
+import onnx
+
+# Load the ONNX model
+model = onnx.load("alexnet.onnx")
+
+# Check that the IR is well formed
+onnx.checker.check_model(model)
+
+# Print a human readable representation of the graph
+print(onnx.helper.printable_graph(model.graph))
